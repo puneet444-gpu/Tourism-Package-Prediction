@@ -1,3 +1,4 @@
+```yaml
 name: Tourism Project Pipeline
 
 on:
@@ -12,13 +13,64 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Install Dependencies
-        run: <add_code_here>
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
 
-      - name: Upload Dataset to Hugging Face Hub
+      - name: Install Dependencies
+        run: pip install pandas datasets huggingface_hub
+
+      - name: Create scripts directory
+        run: mkdir -p scripts
+
+      - name: Create register_raw_data.py
+        run: |
+          cat << 'EOF' > scripts/register_raw_data.py
+          import pandas as pd
+          from datasets import Dataset, DatasetDict
+          from huggingface_hub import HfApi, create_repo
+          import os
+
+          dataset_id = "puneet44/tourism-package-predictor-dataset" # This is the raw dataset ID
+          raw_data_file = "tourism.csv" # Assuming tourism.csv is in the repo root
+
+          # Create a dummy DataFrame if tourism.csv is not present in the repository
+          # In a real scenario, this file would be committed to the repository
+          if not os.path.exists(raw_data_file):
+              data = {
+                  "CustomerID": range(1, 6), "ProdTaken": [1, 0, 1, 0, 0], "Age": [41.0, 49.0, 37.0, 33.0, 32.0],
+                  "TypeofContact": ["Self Enquiry", "Company Invited", "Self Enquiry", "Company Invited", "Company Invited"],
+                  "CityTier": [3, 1, 1, 1, 1], "DurationOfPitch": [6.0, 14.0, 8.0, 9.0, 8.0],
+                  "Occupation": ["Salaried", "Salaried", "Free Lancer", "Salaried", "Salaried"],
+                  "Gender": ["Female", "Male", "Male", "Female", "Male"], "NumberOfPersonVisiting": [3, 3, 3, 2, 3],
+                  "ProductPitched": ["Deluxe", "Deluxe", "Basic", "Basic", "Basic"], "PreferredPropertyStar": [3.0, 4.0, 3.0, 3.0, 3.0],
+                  "MaritalStatus": ["Single", "Divorced", "Single", "Divorced", "Single"], "NumberOfTrips": [1.0, 2.0, 7.0, 2.0, 1.0],
+                  "Passport": [1, 0, 1, 1, 0], "PitchSatisfactionScore": [2, 3, 3, 5, 5], "OwnCar": [1, 1, 0, 1, 1],
+                  "NumberOfChildrenVisiting": [0.0, 2.0, 0.0, 1.0, 1.0], "Designation": ["Manager", "Manager", "Executive", "Executive", "Executive"],
+                  "MonthlyIncome": [20993.0, 20130.0, 17090.0, 17909.0, 18068.0]
+              }
+              dummy_df = pd.DataFrame(data)
+              dummy_df.to_csv(raw_data_file, index=False)
+              print("Created dummy tourism.csv for demonstration.")
+
+          api = HfApi()
+          try:
+              api.repo_info(dataset_id, repo_type="dataset")
+              print(f"Dataset {dataset_id} already exists on Hugging Face Hub. Skipping upload if unchanged.")
+          except Exception:
+              print(f"Dataset {dataset_id} does not exist. Uploading {raw_data_file}.")
+              create_repo(repo_id=dataset_id, repo_type="dataset", exist_ok=True)
+              df_to_upload = pd.read_csv(raw_data_file)
+              hf_dataset = Dataset.from_pandas(df_to_upload)
+              hf_dataset.push_to_hub(dataset_id)
+              print(f"Raw dataset {raw_data_file} uploaded to Hugging Face Hub: {dataset_id}")
+          EOF
+
+      - name: Register Raw Data
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: <add_code_here>
+        run: python scripts/register_raw_data.py
 
 
   data-prep:
@@ -27,13 +79,57 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
       - name: Install Dependencies
-        run: <add_code_here>
+        run: pip install -r requirements.txt
+
+      - name: Create scripts directory
+        run: mkdir -p scripts
+
+      - name: Create prepare_data.py
+        run: |
+          cat << 'EOF' > scripts/prepare_data.py
+          import pandas as pd
+          from sklearn.model_selection import train_test_split
+          from datasets import Dataset, DatasetDict, load_dataset
+          import os
+
+          raw_dataset_id = "puneet44/tourism-package-predictor-dataset"
+          hf_dataset = load_dataset(raw_dataset_id)
+          dataset = hf_dataset["train"] if "train" in hf_dataset else hf_dataset
+          df = dataset.to_pandas()
+          print("Raw dataset loaded successfully for preparation.")
+          columns_to_drop = ["Unnamed: 0", "CustomerID"]
+          df = df.drop(columns=columns_to_drop, errors="ignore")
+          print("Unnecessary columns removed during preparation.")
+          X = df.drop("ProdTaken", axis=1)
+          y = df["ProdTaken"]
+          X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+          train_df = pd.concat([X_train, y_train], axis=1)
+          test_df = pd.concat([X_test, y_test], axis=1)
+          data_dir = "tourism_project/data_preparation"
+          os.makedirs(data_dir, exist_ok=True)
+          train_path = os.path.join(data_dir, "train_data.csv")
+          test_path = os.path.join(data_dir, "test_data.csv")
+          train_df.to_csv(train_path, index=False)
+          test_df.to_csv(test_path, index=False)
+          print("Train and test datasets saved locally during preparation.")
+          train_dataset = Dataset.from_csv(train_path)
+          test_dataset = Dataset.from_csv(test_path)
+          processed_dataset = DatasetDict({"train": train_dataset, "test": test_dataset})
+          processed_dataset_id = "puneet44/tourism-package-predictor-processed-dataset"
+          processed_dataset.push_to_hub(processed_dataset_id)
+          print(f"Processed dataset uploaded to Hugging Face Hub: {processed_dataset_id}")
+          EOF
 
       - name: Run Data Preparation
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: <add_code_here>
+        run: python scripts/prepare_data.py
 
 
   model-training:
@@ -42,18 +138,106 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Install Dependencies
-        run: <add_code_here>
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
 
-      - name: Start MLflow Server
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create scripts directory
+        run: mkdir -p scripts
+
+      - name: Create train_model.py
         run: |
-          nohup mlflow ui --host 0.0.0.0 --port 5000 &  # Run MLflow UI in the background
-          sleep 5  # Wait a moment to let the server start
+          cat << 'EOF' > scripts/train_model.py
+          import os
+          import joblib
+          import mlflow
+          import mlflow.sklearn
+          import pandas as pd
+
+          from datasets import load_dataset
+          from huggingface_hub import create_repo, HfApi
+
+          from sklearn.pipeline import Pipeline
+          from sklearn.compose import ColumnTransformer
+          from sklearn.preprocessing import StandardScaler, OneHotEncoder
+          from sklearn.model_selection import GridSearchCV
+          from sklearn.linear_model import LogisticRegression
+          from sklearn.tree import DecisionTreeClassifier
+          from sklearn.ensemble import RandomForestClassifier
+
+          mlflow_tracking_dir = "tourism_project/model_building/mlruns"
+          os.makedirs(mlflow_tracking_dir, exist_ok=True)
+          mlflow.set_tracking_uri(f"file:{mlflow_tracking_dir}")
+          mlflow.set_experiment("Tourism Package Predictor")
+          print("MLflow setup complete.")
+
+          dataset_id = "puneet44/tourism-package-predictor-processed-dataset"
+          dataset = load_dataset(dataset_id)
+          train_df = dataset["train"].to_pandas()
+          X_train = train_df.drop("ProdTaken", axis=1)
+          y_train = train_df["ProdTaken"]
+          print("Processed dataset loaded for model training.")
+
+          num_cols = X_train.select_dtypes(include=["int64", "float64"]).columns
+          cat_cols = X_train.select_dtypes(include=["object"]).columns
+          preprocessor = ColumnTransformer([
+              ("num", StandardScaler(), num_cols),
+              ("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols)
+          ])
+          print("Preprocessing defined.")
+
+          models = [
+              ("LogisticRegression", Pipeline([("preprocessor", preprocessor), ("model", LogisticRegression(random_state=42))]),
+                  {"model__solver": ["liblinear", "saga"], "model__C": [0.01, 0.1, 1, 10], "model__penalty": ["l1", "l2"]}),
+              ("DecisionTree", Pipeline([("preprocessor", preprocessor), ("model", DecisionTreeClassifier(random_state=42))]),
+                  {"model__max_depth": [None, 10, 20, 30], "model__min_samples_leaf": [1, 2, 4]}),
+              ("RandomForest", Pipeline([("preprocessor", preprocessor), ("model", RandomForestClassifier(random_state=42))]),
+                  {"model__n_estimators": [100, 200], "model__max_depth": [None, 10, 20]})
+          ]
+          print("Models defined for tuning.")
+
+          with mlflow.start_run(run_name="Tourism_Model_Tuning"):
+              for model_name, pipeline, param_grid in models:
+                  with mlflow.start_run(run_name=model_name, nested=True):
+                      grid = GridSearchCV(pipeline, param_grid, cv=5, scoring="roc_auc", n_jobs=-1)
+                      grid.fit(X_train, y_train)
+                      mlflow.log_param("model", model_name)
+                      mlflow.log_params(grid.best_params_)
+                      mlflow.log_metric("best_roc_auc", grid.best_score_)
+                      mlflow.sklearn.log_model(grid.best_estimator_, artifact_path="model")
+                      print(f"{model_name} best ROC-AUC: {grid.best_score_:.4f}")
+          print("Model training and logging complete.")
+
+          best_run = mlflow.search_runs(
+              experiment_names=["Tourism Package Predictor"],
+              order_by=["metrics.best_roc_auc DESC"],
+              max_results=1
+          )
+          best_run_id = best_run.iloc[0].run_id
+          best_model_uri = f"runs:/{best_run_id}/model"
+          best_model = mlflow.sklearn.load_model(best_model_uri)
+          print(f"Best model selected from run: {best_run_id}")
+
+          repo_id = "puneet44/tourism-package-predictor-model"
+          create_repo(repo_id, exist_ok=True, repo_type="model")
+          joblib.dump(best_model, "model.joblib")
+          HfApi().upload_file(
+              path_or_fileobj="model.joblib",
+              path_in_repo="model.joblib",
+              repo_id=repo_id,
+              repo_type="model"
+          )
+          print(f"Best model (model.joblib) uploaded to Hugging Face Model Hub: {repo_id}")
+          EOF
 
       - name: Model Building
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: <add_code_here>
+        run: python scripts/train_model.py
 
 
   deploy-hosting:
@@ -62,10 +246,44 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
       - name: Install Dependencies
-        run: <add_code_here>
+        run: pip install huggingface_hub
+
+      - name: Create scripts directory
+        run: mkdir -p scripts
+
+      - name: Create deploy_space.py
+        run: |
+          cat << 'EOF' > scripts/deploy_space.py
+          from huggingface_hub import HfApi, create_repo
+          import os
+
+          SPACE_ID = "puneet44/tourism-package-predictor-space"
+          # Ensure Dockerfile, app.py, requirements.txt are present in the repo root
+          create_repo(repo_id=SPACE_ID, repo_type="space", space_sdk="docker", exist_ok=True)
+          api = HfApi()
+          files_to_upload = ["Dockerfile", "app.py", "requirements.txt"]
+          for file_name in files_to_upload:
+              if os.path.exists(file_name):
+                  api.upload_file(
+                      path_or_fileobj=file_name,
+                      path_in_repo=file_name,
+                      repo_id=SPACE_ID,
+                      repo_type="space"
+                  )
+                  print(f"Uploaded {file_name} to Hugging Face Space.")
+              else:
+                  print(f"Warning: {file_name} not found. Skipping upload. Please ensure it's in the repo root.")
+          print(f"Deployment files processed for Hugging Face Space: {SPACE_ID}")
+          EOF
 
       - name: Push files to Frontend Hugging Face Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: <add_code_here>
+        run: python scripts/deploy_space.py
+```
