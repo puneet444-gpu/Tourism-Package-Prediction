@@ -1,0 +1,18 @@
+# ==============================
+# Project Dependencies
+# ==============================
+
+# Core libraries
+pandas>=1.5.0
+numpy>=1.24.0
+scikit-learn>=1.2.0
+
+# Model persistence
+joblib>=1.2.0
+dill>=0.3.7
+
+# Deployment & UI
+streamlit>=1.25.0
+
+# Hugging Face integration
+huggingface-hub>=0.16.4
