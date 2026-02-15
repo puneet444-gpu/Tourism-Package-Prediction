@@ -3,37 +3,26 @@ name: Tourism Project Pipeline
 on:
   push:
     branches:
-      - main
+      - main  # Trigger on push to main branch
 
 jobs:
 
-  setup-requirements:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Create requirements.txt
-        run: |
-          echo "pandas" > requirements.txt
-          echo "scikit-learn" >> requirements.txt
-          echo "xgboost" >> requirements.txt
-          echo "mlflow" >> requirements.txt
-          echo "datasets" >> requirements.txt
-          echo "huggingface_hub" >> requirements.txt
-          cat requirements.txt
-
   register-dataset:
-    needs: setup-requirements
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
+
       - name: Install Dependencies
-        run: pip install -r requirements.txt
+        run: pip install pandas datasets huggingface_hub
+
       - name: Create scripts directory
         run: mkdir -p scripts
+
       - name: Create register_raw_data.py
         run: |
           cat << 'EOF' > scripts/register_raw_data.py
@@ -80,24 +69,30 @@ jobs:
               Dataset.from_pandas(df).push_to_hub(dataset_id)
               print(f"Uploaded raw dataset to Hugging Face: {dataset_id}")
           EOF
+
       - name: Register Raw Data
         env:
           HF_TOKEN2: ${{ secrets.HF_TOKEN2 }}
         run: python scripts/register_raw_data.py
+
 
   data-prep:
     needs: register-dataset
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
+
       - name: Install Dependencies
-        run: pip install -r requirements.txt
+        run: pip install pandas scikit-learn datasets
+
       - name: Create scripts directory
         run: mkdir -p scripts
+
       - name: Create prepare_data.py
         run: |
           cat << 'EOF' > scripts/prepare_data.py
@@ -129,24 +124,30 @@ jobs:
           processed_dataset.push_to_hub("puneet44/tourism-package-predictor-processed-dataset")
           print("Processed dataset uploaded.")
           EOF
+
       - name: Run Data Preparation
         env:
           HF_TOKEN2: ${{ secrets.HF_TOKEN2 }}
         run: python scripts/prepare_data.py
+
 
   model-training:
     needs: data-prep
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
+
       - name: Install Dependencies
-        run: pip install -r requirements.txt xgboost scikit-learn mlflow
+        run: pip install pandas scikit-learn xgboost mlflow datasets huggingface_hub joblib
+
       - name: Create scripts directory
         run: mkdir -p scripts
+
       - name: Create train_model.py
         run: |
           cat << 'EOF' > scripts/train_model.py
@@ -232,24 +233,30 @@ jobs:
           HfApi().upload_file("model.joblib", "model.joblib", repo_id=repo_id, repo_type="model")
           print(f"Best model uploaded: {repo_id}")
           EOF
+
       - name: Model Building
         env:
           HF_TOKEN2: ${{ secrets.HF_TOKEN2 }}
         run: python scripts/train_model.py
+
 
   deploy-hosting:
     needs: [model-training, data-prep, register-dataset]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
+
       - name: Install Dependencies
-        run: pip install huggingface_hub
+        run: pip install huggingface_hub pandas scikit-learn joblib datasets
+
       - name: Create scripts directory
         run: mkdir -p scripts
+
       - name: Create deploy_space.py
         run: |
           cat << 'EOF' > scripts/deploy_space.py
@@ -257,17 +264,26 @@ jobs:
           import os
 
           SPACE_ID = "puneet44/tourism-package-predictor-space"
+          DEPLOYMENT_DIR = "tourism_project/deployment" # Define deployment directory
+
           create_repo(SPACE_ID, repo_type="space", space_sdk="docker", exist_ok=True)
           api = HfApi()
-          for file_name in ["Dockerfile", "app.py", "requirements.txt"]:
-              if os.path.exists(file_name):
-                  api.upload_file(file_name, file_name, repo_id=SPACE_ID, repo_type="space")
+
+          # List of files to upload, relative to the DEPLOYMENT_DIR
+          files_to_upload = ["Dockerfile", "app.py", "requirements.txt"]
+
+          for file_name in files_to_upload:
+              full_path = os.path.join(DEPLOYMENT_DIR, file_name) # Construct full path
+              if os.path.exists(full_path):
+                  api.upload_file(full_path, file_name, repo_id=SPACE_ID, repo_type="space") # Upload to root of space
                   print(f"Uploaded {file_name}")
               else:
-                  print(f"Warning: {file_name} missing. Skipped.")
+                  print(f"Warning: {full_path} missing. Skipped.")
           print(f"Deployment complete for: {SPACE_ID}")
           EOF
+
       - name: Push files to Hugging Face Space
         env:
           HF_TOKEN2: ${{ secrets.HF_TOKEN2 }}
         run: python scripts/deploy_space.py
+"""
