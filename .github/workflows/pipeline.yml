@@ -1,0 +1,304 @@
+
+name: Tourism Project Pipeline
+
+on:
+  push:
+    branches:
+      - main  # Trigger on push to main branch
+
+jobs:
+
+  setup-requirements:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Create requirements.txt
+        run: |
+          echo "pandas" > requirements.txt
+          echo "scikit-learn" >> requirements.txt
+          echo "xgboost" >> requirements.txt
+          echo "mlflow" >> requirements.txt
+          echo "datasets" >> requirements.txt
+          echo "huggingface_hub" >> requirements.txt
+          cat requirements.txt
+
+  register-dataset:
+    needs: setup-requirements
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create scripts directory
+        run: mkdir -p scripts
+
+      - name: Create register_raw_data.py
+        run: |
+          cat << 'EOF' > scripts/register_raw_data.py
+          import pandas as pd
+          from datasets import Dataset
+          from huggingface_hub import HfApi, create_repo
+          import os
+
+          dataset_id = "puneet44/tourism-package-predictor-dataset"
+          raw_data_file = "tourism.csv"
+
+          if not os.path.exists(raw_data_file):
+              data = {
+                  "CustomerID": range(1, 6),
+                  "ProdTaken": [1, 0, 1, 0, 0],
+                  "Age": [41, 49, 37, 33, 32],
+                  "TypeofContact": ["Self Enquiry", "Company Invited", "Self Enquiry", "Company Invited", "Company Invited"],
+                  "CityTier": [3, 1, 1, 1, 1],
+                  "DurationOfPitch": [6, 14, 8, 9, 8],
+                  "Occupation": ["Salaried", "Salaried", "Free Lancer", "Salaried", "Salaried"],
+                  "Gender": ["Female", "Male", "Male", "Female", "Male"],
+                  "NumberOfPersonVisiting": [3, 3, 3, 2, 3],
+                  "ProductPitched": ["Deluxe", "Deluxe", "Basic", "Basic", "Basic"],
+                  "PreferredPropertyStar": [3, 4, 3, 3, 3],
+                  "MaritalStatus": ["Single", "Divorced", "Single", "Divorced", "Single"],
+                  "NumberOfTrips": [1, 2, 7, 2, 1],
+                  "Passport": [1, 0, 1, 1, 0],
+                  "PitchSatisfactionScore": [2, 3, 3, 5, 5],
+                  "OwnCar": [1, 1, 0, 1, 1],
+                  "NumberOfChildrenVisiting": [0, 2, 0, 1, 1],
+                  "Designation": ["Manager", "Manager", "Executive", "Executive", "Executive"],
+                  "MonthlyIncome": [20993, 20130, 17090, 17909, 18068]
+              }
+              pd.DataFrame(data).to_csv(raw_data_file, index=False)
+              print("Created dummy tourism.csv for demonstration.")
+
+          api = HfApi()
+          try:
+              api.repo_info(dataset_id, repo_type="dataset")
+              print(f"Dataset {dataset_id} already exists. Skipping upload.")
+          except Exception:
+              create_repo(dataset_id, repo_type="dataset", exist_ok=True)
+              df = pd.read_csv(raw_data_file)
+              Dataset.from_pandas(df).push_to_hub(dataset_id)
+              print(f"Uploaded raw dataset to Hugging Face: {dataset_id}")
+          EOF
+
+      - name: Register Raw Data
+        env:
+          HF_TOKEN2: ${{ secrets.HF_TOKEN2 }}
+        run: python scripts/register_raw_data.py
+
+
+  data-prep:
+    needs: register-dataset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create scripts directory
+        run: mkdir -p scripts
+
+      - name: Create prepare_data.py
+        run: |
+          cat << 'EOF' > scripts/prepare_data.py
+          import pandas as pd
+          from sklearn.model_selection import train_test_split
+          from datasets import Dataset, DatasetDict, load_dataset
+          import os
+
+          raw_dataset_id = "puneet44/tourism-package-predictor-dataset"
+          hf_dataset = load_dataset(raw_dataset_id)
+          df = hf_dataset["train"].to_pandas() if "train" in hf_dataset else hf_dataset.to_pandas()
+
+          df.drop(columns=["Unnamed: 0", "CustomerID"], errors="ignore", inplace=True)
+
+          X = df.drop("ProdTaken", axis=1)
+          y = df["ProdTaken"]
+          X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+          os.makedirs("tourism_project/data_preparation", exist_ok=True)
+          train_path = "tourism_project/data_preparation/train_data.csv"
+          test_path = "tourism_project/data_preparation/test_data.csv"
+          pd.concat([X_train, y_train], axis=1).to_csv(train_path, index=False)
+          pd.concat([X_test, y_test], axis=1).to_csv(test_path, index=False)
+
+          processed_dataset = DatasetDict({
+              "train": Dataset.from_csv(train_path),
+              "test": Dataset.from_csv(test_path)
+          })
+          processed_dataset.push_to_hub("puneet44/tourism-package-predictor-processed-dataset")
+          print("Processed dataset uploaded.")
+          EOF
+
+      - name: Run Data Preparation
+        env:
+          HF_TOKEN2: ${{ secrets.HF_TOKEN2 }}
+        run: python scripts/prepare_data.py
+
+
+  model-training:
+    needs: data-prep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt xgboost scikit-learn mlflow
+
+      - name: Create scripts directory
+        run: mkdir -p scripts
+
+      - name: Create train_model.py
+        run: |
+          cat << 'EOF' > scripts/train_model.py
+          import os
+          import joblib
+          import mlflow
+          import mlflow.sklearn
+          import pandas as pd
+          from datasets import load_dataset
+          from huggingface_hub import create_repo, HfApi
+          from sklearn.pipeline import Pipeline
+          from sklearn.compose import ColumnTransformer
+          from sklearn.preprocessing import StandardScaler, OneHotEncoder
+          from sklearn.model_selection import GridSearchCV
+          from sklearn.tree import DecisionTreeClassifier
+          from sklearn.ensemble import BaggingClassifier, RandomForestClassifier, AdaBoostClassifier, GradientBoostingClassifier
+          from xgboost import XGBClassifier
+
+          os.makedirs("tourism_project/model_building/mlruns", exist_ok=True)
+          mlflow.set_tracking_uri("file:tourism_project/model_building/mlruns")
+          mlflow.set_experiment("Tourism Package Predictor")
+
+          dataset = load_dataset("puneet44/tourism-package-predictor-processed-dataset")
+          train_df = dataset["train"].to_pandas()
+          X_train = train_df.drop("ProdTaken", axis=1)
+          y_train = train_df["ProdTaken"]
+
+          num_cols = X_train.select_dtypes(include=["int64", "float64"]).columns
+          cat_cols = X_train.select_dtypes(include=["object"]).columns
+          preprocessor = ColumnTransformer([
+              ("num", StandardScaler(), num_cols),
+              ("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols)
+          ])
+
+          models = [
+              ("DecisionTree",
+               DecisionTreeClassifier(random_state=42),
+               {"model__max_depth": [None, 10, 20], "model__min_samples_leaf": [1, 2, 4]}),
+
+              ("Bagging",
+               BaggingClassifier(random_state=42),
+               {"model__n_estimators": [10, 50, 100]}),
+
+              ("RandomForest",
+               RandomForestClassifier(random_state=42),
+               {"model__n_estimators": [100, 200], "model__max_depth": [None, 10, 20]}),
+
+              ("AdaBoost",
+               AdaBoostClassifier(random_state=42),
+               {"model__n_estimators": [50, 100], "model__learning_rate": [0.01, 0.1, 1]}),
+
+              ("GradientBoosting",
+               GradientBoostingClassifier(random_state=42),
+               {"model__n_estimators": [100, 200], "model__learning_rate": [0.01, 0.1], "model__max_depth": [3, 5]}),
+
+              ("XGBoost",
+               XGBClassifier(eval_metric="logloss", random_state=42),
+               {"model__n_estimators": [100, 200], "model__learning_rate": [0.01, 0.1], "model__max_depth": [3, 6]})
+          ]
+
+          with mlflow.start_run(run_name="Tourism_Model_Tuning"):
+              for model_name, pipeline_model, param_grid in models:
+                  pipeline = Pipeline([("preprocessor", preprocessor), ("model", pipeline_model)])
+                  with mlflow.start_run(run_name=model_name, nested=True):
+                      grid = GridSearchCV(pipeline, param_grid, cv=5, scoring="roc_auc", n_jobs=-1)
+                      grid.fit(X_train, y_train)
+                      mlflow.log_param("model", model_name)
+                      mlflow.log_params(grid.best_params_)
+                      mlflow.log_metric("best_roc_auc", grid.best_score_)
+                      mlflow.sklearn.log_model(grid.best_estimator_, artifact_path="model")
+                      print(f"{model_name} best ROC-AUC: {grid.best_score_:.4f}")
+
+          best_run_id = mlflow.search_runs(
+              experiment_names=["Tourism Package Predictor"],
+              order_by=["metrics.best_roc_auc DESC"],
+              max_results=1
+          ).iloc[0].run_id
+
+          best_model = mlflow.sklearn.load_model(f"runs:/{best_run_id}/model")
+          repo_id = "puneet44/tourism-package-predictor-model"
+          create_repo(repo_id, exist_ok=True, repo_type="model")
+          joblib.dump(best_model, "model.joblib")
+          HfApi().upload_file("model.joblib", "model.joblib", repo_id=repo_id, repo_type="model")
+          print(f"Best model uploaded: {repo_id}")
+          EOF
+
+      - name: Model Building
+        env:
+          HF_TOKEN2: ${{ secrets.HF_TOKEN2 }}
+        run: python scripts/train_model.py
+
+
+  deploy-hosting:
+    needs: [model-training, data-prep, register-dataset]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: pip install huggingface_hub
+
+      - name: Create scripts directory
+        run: mkdir -p scripts
+
+      - name: Create deploy_space.py
+        run: |
+          cat << 'EOF' > scripts/deploy_space.py
+          from huggingface_hub import HfApi, create_repo
+          import os
+
+          SPACE_ID = "puneet44/tourism-package-predictor-space"
+          DEPLOYMENT_DIR = "tourism_project/deployment" # Define deployment directory
+
+          create_repo(SPACE_ID, repo_type="space", space_sdk="docker", exist_ok=True)
+          api = HfApi()
+
+          # List of files to upload, relative to the DEPLOYMENT_DIR
+          files_to_upload = ["Dockerfile", "app.py", "requirements.txt"]
+
+          for file_name in files_to_upload:
+              full_path = os.path.join(DEPLOYMENT_DIR, file_name) # Construct full path
+              if os.path.exists(full_path):
+                  api.upload_file(full_path, file_name, repo_id=SPACE_ID, repo_type="space") # Upload to root of space
+                  print(f"Uploaded {file_name}")
+              else:
+                  print(f"Warning: {full_path} missing. Skipped.")
+          print(f"Deployment complete for: {SPACE_ID}")
+          EOF
+
+      - name: Push files to Hugging Face Space
+        env:
+          HF_TOKEN2: ${{ secrets.HF_TOKEN2 }}
+        run: python scripts/deploy_space.py
