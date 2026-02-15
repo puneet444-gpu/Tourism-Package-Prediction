@@ -280,21 +280,14 @@ jobs:
           import os
 
           SPACE_ID = "puneet44/tourism-package-predictor-space"
-          DEPLOYMENT_DIR = "tourism_project/deployment" # Define deployment directory
-
           create_repo(SPACE_ID, repo_type="space", space_sdk="docker", exist_ok=True)
           api = HfApi()
-
-          # List of files to upload, relative to the DEPLOYMENT_DIR
-          files_to_upload = ["Dockerfile", "app.py", "requirements.txt"]
-
-          for file_name in files_to_upload:
-              full_path = os.path.join(DEPLOYMENT_DIR, file_name) # Construct full path
-              if os.path.exists(full_path):
-                  api.upload_file(full_path, file_name, repo_id=SPACE_ID, repo_type="space") # Upload to root of space
+          for file_name in ["Dockerfile", "app.py", "requirements.txt"]:
+              if os.path.exists(file_name):
+                  api.upload_file(file_name, file_name, repo_id=SPACE_ID, repo_type="space")
                   print(f"Uploaded {file_name}")
               else:
-                  print(f"Warning: {full_path} missing. Skipped.")
+                  print(f"Warning: {file_name} missing. Skipped.")
           print(f"Deployment complete for: {SPACE_ID}")
           EOF
 
